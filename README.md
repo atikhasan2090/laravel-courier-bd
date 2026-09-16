@@ -1,8 +1,10 @@
 # Laravel Courier BD 📦
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/shipkit-bd/laravel-courier-bd.svg?style=flat-square)](https://packagist.org/packages/shipkit-bd/laravel-courier-bd)
-[![Total Downloads](https://img.shields.io/packagist/dt/shipkit-bd/laravel-courier-bd.svg?style=flat-square)](https://packagist.org/packages/shipkit-bd/laravel-courier-bd)
-[![License](https://img.shields.io/packagist/l/shipkit-bd/laravel-courier-bd.svg?style=flat-square)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/atikhasan2090/laravel-courier-bd?style=flat-square&color=blue)](https://github.com/atikhasan2090/laravel-courier-bd/releases)
+[![License](https://img.shields.io/github/license/atikhasan2090/laravel-courier-bd.svg?style=flat-square&color=brightgreen)](LICENSE)
+[![PHP Version](https://img.shields.io/badge/php-%5E8.1-777bb4.svg?style=flat-square)](composer.json)
+[![Laravel Version](https://img.shields.io/badge/laravel-10.x%20%7C%2011.x-red.svg?style=flat-square)](composer.json)
+
 
 A unified Laravel package that provides a single, consistent driver-based API interface for integrating multiple Bangladeshi courier services starting with **Pathao**, **RedX**, and **Steadfast**.
 
