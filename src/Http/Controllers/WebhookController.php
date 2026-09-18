@@ -35,13 +35,25 @@ class WebhookController extends Controller
             return response()->json(['status' => 'ignored', 'message' => 'Missing consignment_id or status'], 400);
         }
 
-        /** @var \Shipkit\CourierBD\Contracts\CourierInterface $driver */
-        $driver = Courier::via($courier);
+        try {
+            /** @var \Shipkit\CourierBD\Contracts\CourierInterface $driver */
+            $driver = Courier::via($courier);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Unsupported courier driver [{$courier}]",
+            ], 404);
+        }
+
+        if (! $driver->verifyWebhook($request)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Unauthorized webhook request',
+            ], 401);
+        }
 
         // Map status using driver method
-        $newStatus = method_exists($driver, 'mapStatus')
-            ? $driver->mapStatus($rawStatus)
-            : DeliveryStatus::InTransit;
+        $newStatus = $driver->mapStatus($rawStatus);
 
         $shipment = null;
         $previousStatus = DeliveryStatus::Pending;
@@ -52,7 +64,8 @@ class WebhookController extends Controller
                 if ($shipment) {
                     $previousStatus = $shipment->status;
                     $shipment->status = $newStatus;
-                    $shipment->raw_response = array_merge($shipment->raw_response ?? [], ['webhook' => $payload]);
+                    $existingRaw = is_array($shipment->raw_response) ? $shipment->raw_response : [];
+                    $shipment->raw_response = array_merge($existingRaw, ['webhook' => $payload]);
                     $shipment->save();
                 }
             }
@@ -63,7 +76,8 @@ class WebhookController extends Controller
         // Dispatch status updated event
         event(new ShipmentStatusUpdated($consignmentId, $previousStatus, $newStatus, $courier, $shipment));
 
-        if ($newStatus === DeliveryStatus::Delivered) {
+        // Dispatch delivered event only on first delivery transition
+        if ($newStatus === DeliveryStatus::Delivered && $previousStatus !== DeliveryStatus::Delivered) {
             event(new ShipmentDelivered($consignmentId, $courier, $shipment));
         }
 

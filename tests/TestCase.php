@@ -22,8 +22,22 @@ abstract class TestCase extends OrchestraTestCase
         ];
     }
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $migration = include __DIR__ . '/../database/migrations/create_shipments_table.php.stub';
+        $migration->up();
+    }
+
     protected function getEnvironmentSetUp($app): void
     {
-        // Setup default config if needed
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+        $app['config']->set('shipkit.auto_log', true);
     }
 }

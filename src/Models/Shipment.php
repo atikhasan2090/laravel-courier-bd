@@ -51,4 +51,14 @@ class Shipment extends Model
     {
         return $query->where('status', DeliveryStatus::Cancelled);
     }
+
+    public function scopeForMerchantOrder($query, string $orderId)
+    {
+        return $query->where('merchant_order_id', $orderId);
+    }
+
+    public function scopeForConsignment($query, string $consignmentId)
+    {
+        return $query->where('consignment_id', $consignmentId);
+    }
 }

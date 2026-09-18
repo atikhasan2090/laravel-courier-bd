@@ -42,4 +42,34 @@ class CourierManagerTest extends TestCase
         $this->assertInstanceOf(SteadfastCourier::class, $driver);
         $this->assertEquals('steadfast', $driver->getName());
     }
+
+    public function test_it_throws_courier_not_supported_exception_for_unknown_driver(): void
+    {
+        $this->expectException(\Shipkit\CourierBD\Exceptions\CourierNotSupportedException::class);
+        Courier::via('dhl_bangladesh');
+    }
+
+    public function test_order_request_helpers(): void
+    {
+        $order = \Shipkit\CourierBD\DTOs\OrderRequest::fromArray([
+            'order_id' => 'ORD-123',
+            'phone' => '+8801712-345 678',
+            'city' => 'Dhaka',
+            'address' => 'Mirpur, Dhaka',
+        ]);
+
+        $this->assertEquals('01712345678', $order->recipientPhone);
+        $this->assertEquals('01712345678', $order->getNormalizedPhone());
+        $this->assertTrue($order->isInsideDhaka());
+
+        $outsideOrder = \Shipkit\CourierBD\DTOs\OrderRequest::fromArray([
+            'order_id' => 'ORD-456',
+            'phone' => '8801812345678',
+            'city' => 'Chittagong',
+            'address' => 'GEC Circle, Chittagong',
+        ]);
+
+        $this->assertEquals('01812345678', $outsideOrder->recipientPhone);
+        $this->assertFalse($outsideOrder->isInsideDhaka());
+    }
 }

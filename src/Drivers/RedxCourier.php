@@ -2,15 +2,20 @@
 
 namespace Shipkit\CourierBD\Drivers;
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Shipkit\CourierBD\Concerns\LogsShipments;
 use Shipkit\CourierBD\Contracts\CourierInterface;
 use Shipkit\CourierBD\DTOs\OrderRequest;
 use Shipkit\CourierBD\DTOs\OrderResponse;
 use Shipkit\CourierBD\Enums\DeliveryStatus;
 use Shipkit\CourierBD\Exceptions\CourierApiException;
+use Shipkit\CourierBD\Exceptions\OrderCreationFailedException;
 
 class RedxCourier implements CourierInterface
 {
+    use LogsShipments;
+
     protected string $baseUrl;
     protected string $apiToken;
     protected bool $sandbox;
@@ -39,11 +44,15 @@ class RedxCourier implements CourierInterface
 
     public function createOrder(OrderRequest $order): OrderResponse
     {
+        $deliveryAreaId = (is_numeric($order->recipientZone) && (int) $order->recipientZone > 0)
+            ? (int) $order->recipientZone
+            : null;
+
         $payload = [
             'customer_name' => $order->recipientName,
-            'customer_phone' => $order->recipientPhone,
+            'customer_phone' => $order->getNormalizedPhone(),
             'delivery_area' => $order->recipientArea ?? $order->recipientCity ?? 'Dhaka',
-            'delivery_area_id' => $order->recipientZone ? (int) $order->recipientZone : null,
+            'delivery_area_id' => $deliveryAreaId,
             'customer_address' => $order->recipientAddress,
             'merchant_invoice_id' => $order->merchantOrderId,
             'cash_collection_amount' => (float) $order->amountToCollect,
@@ -55,6 +64,7 @@ class RedxCourier implements CourierInterface
                     'name' => $order->itemDescription ?? 'Item',
                     'quantity' => $order->itemQuantity,
                     'category' => 'General',
+                    'value' => (float) $order->amountToCollect,
                 ]
             ],
         ];
@@ -71,7 +81,16 @@ class RedxCourier implements CourierInterface
 
         $trackingId = (string) ($response->json('tracking_id') ?? $response->json('parcel_id') ?? '');
 
-        return new OrderResponse(
+        if (empty($trackingId)) {
+            throw OrderCreationFailedException::make(
+                $this->getName(),
+                "Tracking ID missing in RedX response",
+                $response->json() ?? [],
+                $response->status()
+            );
+        }
+
+        $orderResponse = new OrderResponse(
             consignmentId: $trackingId,
             status: DeliveryStatus::Pending,
             trackingUrl: "https://redx.com.bd/track-parcel?trackingId={$trackingId}",
@@ -81,6 +100,8 @@ class RedxCourier implements CourierInterface
             merchantOrderId: $order->merchantOrderId,
             rawResponse: $response->json() ?? []
         );
+
+        return $this->recordShipment($order, $orderResponse);
     }
 
     public function track(string $consignmentId): OrderResponse
@@ -126,11 +147,15 @@ class RedxCourier implements CourierInterface
 
         $response = $this->http()->post("{$this->baseUrl}/charge-calculator", $payload);
 
-        if ($response->successful()) {
-            return (float) ($response->json('charge') ?? $response->json('total_charge') ?? 60.0);
+        if ($response->failed()) {
+            throw new CourierApiException(
+                "RedX fee calculation failed: " . ($response->json('message') ?? $response->body()),
+                $response->status(),
+                $response->json() ?? []
+            );
         }
 
-        return 65.0 + (max(0, $order->itemWeight - 1.0) * 15.0);
+        return (float) ($response->json('charge') ?? $response->json('total_charge') ?? 65.0);
     }
 
     public function checkCoverage(string $areaIdentifier): bool
@@ -147,6 +172,23 @@ class RedxCourier implements CourierInterface
         return true;
     }
 
+    public function verifyWebhook(Request $request): bool
+    {
+        $secret = config('shipkit.couriers.redx.webhook_secret', '');
+        if (empty($secret)) {
+            return true;
+        }
+
+        $authHeader = $request->header('Authorization', '');
+        if ($authHeader && str_replace('Bearer ', '', $authHeader) === $secret) {
+            return true;
+        }
+
+        return $request->header('X-Redx-Secret') === $secret
+            || $request->header('X-Webhook-Secret') === $secret
+            || $request->query('token') === $secret;
+    }
+
     public function mapStatus(string $rawStatus): DeliveryStatus
     {
         return match (strtolower(trim($rawStatus))) {
@@ -156,6 +198,7 @@ class RedxCourier implements CourierInterface
             'partial-delivered', 'partially-delivered' => DeliveryStatus::PartiallyDelivered,
             'cancelled', 'returned', 'return-in-transit' => DeliveryStatus::Cancelled,
             'hold' => DeliveryStatus::Hold,
+            '' => DeliveryStatus::Unknown,
             default => DeliveryStatus::Processing,
         };
     }

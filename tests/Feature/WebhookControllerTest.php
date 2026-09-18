@@ -65,4 +65,60 @@ class WebhookControllerTest extends TestCase
 
         Event::assertDispatched(ShipmentStatusUpdated::class);
     }
+
+    public function test_webhook_returns_404_for_unsupported_courier(): void
+    {
+        $response = $this->postJson('/shipkit/webhooks/non_existent_courier', [
+            'consignment_id' => '123',
+            'status' => 'delivered',
+        ]);
+
+        $response->assertStatus(404);
+        $response->assertJson([
+            'status' => 'error',
+        ]);
+    }
+
+    public function test_webhook_rejects_unauthorized_request_when_secret_is_set(): void
+    {
+        config(['shipkit.couriers.pathao.webhook_secret' => 'super_secret_key']);
+
+        $payload = [
+            'consignment_id' => 'PTH999',
+            'order_status' => 'Delivered',
+        ];
+
+        // Request without secret
+        $response = $this->postJson('/shipkit/webhooks/pathao', $payload);
+        $response->assertStatus(401);
+
+        // Request with correct secret in Authorization header
+        $authResponse = $this->postJson('/shipkit/webhooks/pathao', $payload, [
+            'Authorization' => 'Bearer super_secret_key',
+        ]);
+        $authResponse->assertStatus(200);
+    }
+
+    public function test_webhook_suppresses_duplicate_delivered_event(): void
+    {
+        // Pre-create shipment that is ALREADY delivered
+        \Shipkit\CourierBD\Models\Shipment::create([
+            'merchant_order_id' => 'ORD-DUP',
+            'courier' => 'pathao',
+            'consignment_id' => 'PTH-DUP-1',
+            'status' => DeliveryStatus::Delivered,
+        ]);
+
+        Event::fake([ShipmentDelivered::class, ShipmentStatusUpdated::class]);
+
+        $response = $this->postJson('/shipkit/webhooks/pathao', [
+            'consignment_id' => 'PTH-DUP-1',
+            'order_status' => 'Delivered',
+        ]);
+
+        $response->assertStatus(200);
+
+        // ShipmentDelivered should NOT be dispatched because it was already delivered
+        Event::assertNotDispatched(ShipmentDelivered::class);
+    }
 }

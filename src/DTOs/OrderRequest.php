@@ -4,10 +4,12 @@ namespace Shipkit\CourierBD\DTOs;
 
 readonly class OrderRequest
 {
+    public string $recipientPhone;
+
     public function __construct(
         public string $merchantOrderId,
         public string $recipientName,
-        public string $recipientPhone,
+        string $recipientPhone,
         public string $recipientAddress,
         public ?string $recipientCity = null,
         public ?string $recipientZone = null,
@@ -18,18 +20,47 @@ readonly class OrderRequest
         public int $itemQuantity = 1,
         public ?string $specialInstruction = null,
         public array $extraData = []
-    ) {}
+    ) {
+        $this->recipientPhone = self::normalizePhoneNumber($recipientPhone);
+    }
+
+    public static function normalizePhoneNumber(string $phone): string
+    {
+        $cleaned = preg_replace('/[^\d]/', '', $phone);
+
+        if (str_starts_with($cleaned, '8801')) {
+            $cleaned = substr($cleaned, 2);
+        } elseif (str_starts_with($cleaned, '1') && strlen($cleaned) === 10) {
+            $cleaned = '0' . $cleaned;
+        }
+
+        return $cleaned;
+    }
+
+    public function getNormalizedPhone(): string
+    {
+        return self::normalizePhoneNumber($this->recipientPhone);
+    }
+
+    public function isInsideDhaka(): bool
+    {
+        if ($this->recipientCity && (strcasecmp($this->recipientCity, 'dhaka') === 0 || $this->recipientCity === '1')) {
+            return true;
+        }
+
+        return stripos($this->recipientAddress, 'dhaka') !== false;
+    }
 
     public static function fromArray(array $data): self
     {
         return new self(
             merchantOrderId: (string) ($data['merchant_order_id'] ?? $data['order_id'] ?? ''),
             recipientName: (string) ($data['recipient_name'] ?? $data['name'] ?? ''),
-            recipientPhone: (string) ($data['recipient_phone'] ?? $data['phone'] ?? ''),
+            recipientPhone: self::normalizePhoneNumber((string) ($data['recipient_phone'] ?? $data['phone'] ?? '')),
             recipientAddress: (string) ($data['recipient_address'] ?? $data['address'] ?? ''),
-            recipientCity: $data['recipient_city'] ?? $data['city'] ?? null,
-            recipientZone: $data['recipient_zone'] ?? $data['zone'] ?? null,
-            recipientArea: $data['recipient_area'] ?? $data['area'] ?? null,
+            recipientCity: isset($data['recipient_city']) ? (string) $data['recipient_city'] : (isset($data['city']) ? (string) $data['city'] : null),
+            recipientZone: isset($data['recipient_zone']) ? (string) $data['recipient_zone'] : (isset($data['zone']) ? (string) $data['zone'] : null),
+            recipientArea: isset($data['recipient_area']) ? (string) $data['recipient_area'] : (isset($data['area']) ? (string) $data['area'] : null),
             amountToCollect: (float) ($data['amount_to_collect'] ?? $data['amount'] ?? $data['cod'] ?? 0),
             itemWeight: (float) ($data['item_weight'] ?? $data['weight'] ?? 0.5),
             itemDescription: $data['item_description'] ?? $data['description'] ?? 'General Package',

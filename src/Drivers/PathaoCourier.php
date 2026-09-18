@@ -2,16 +2,21 @@
 
 namespace Shipkit\CourierBD\Drivers;
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Shipkit\CourierBD\Concerns\LogsShipments;
 use Shipkit\CourierBD\Contracts\CourierInterface;
 use Shipkit\CourierBD\DTOs\OrderRequest;
 use Shipkit\CourierBD\DTOs\OrderResponse;
 use Shipkit\CourierBD\Enums\DeliveryStatus;
 use Shipkit\CourierBD\Exceptions\CourierApiException;
+use Shipkit\CourierBD\Exceptions\OrderCreationFailedException;
 
 class PathaoCourier implements CourierInterface
 {
+    use LogsShipments;
+
     protected string $baseUrl;
     protected string $clientId;
     protected string $clientSecret;
@@ -59,7 +64,16 @@ class PathaoCourier implements CourierInterface
                 );
             }
 
-            return $response->json('access_token');
+            $token = $response->json('access_token');
+            if (empty($token)) {
+                throw new CourierApiException(
+                    "Pathao authentication failed: No access token received from API",
+                    $response->status(),
+                    $response->json() ?? []
+                );
+            }
+
+            return $token;
         });
     }
 
@@ -72,15 +86,19 @@ class PathaoCourier implements CourierInterface
 
     public function createOrder(OrderRequest $order): OrderResponse
     {
+        $recipientCity = is_numeric($order->recipientCity) ? (int) $order->recipientCity : 1;
+        $recipientZone = is_numeric($order->recipientZone) ? (int) $order->recipientZone : 1;
+        $recipientArea = (is_numeric($order->recipientArea) && (int) $order->recipientArea > 0) ? (int) $order->recipientArea : null;
+
         $payload = [
             'store_id' => $this->storeId,
             'merchant_order_id' => $order->merchantOrderId,
             'recipient_name' => $order->recipientName,
-            'recipient_phone' => $order->recipientPhone,
+            'recipient_phone' => $order->getNormalizedPhone(),
             'recipient_address' => $order->recipientAddress,
-            'recipient_city' => (int) ($order->recipientCity ?? 1), // Default Dhaka City ID if null
-            'recipient_zone' => (int) ($order->recipientZone ?? 1),
-            'recipient_area' => $order->recipientArea ? (int) $order->recipientArea : null,
+            'recipient_city' => $recipientCity,
+            'recipient_zone' => $recipientZone,
+            'recipient_area' => $recipientArea,
             'delivery_type' => 48, // 48 Hours Normal Delivery
             'item_type' => 2, // Parcel
             'special_instruction' => $order->specialInstruction ?? '',
@@ -103,7 +121,16 @@ class PathaoCourier implements CourierInterface
         $data = $response->json('data') ?? $response->json();
         $consignmentId = (string) ($data['consignment_id'] ?? '');
 
-        return new OrderResponse(
+        if (empty($consignmentId)) {
+            throw OrderCreationFailedException::make(
+                $this->getName(),
+                "Consignment ID missing in Pathao response",
+                $response->json() ?? [],
+                $response->status()
+            );
+        }
+
+        $orderResponse = new OrderResponse(
             consignmentId: $consignmentId,
             status: DeliveryStatus::Pending,
             trackingUrl: "https://pathao.com/courier/tracking?consignment_id={$consignmentId}",
@@ -113,6 +140,8 @@ class PathaoCourier implements CourierInterface
             merchantOrderId: $order->merchantOrderId,
             rawResponse: $response->json() ?? []
         );
+
+        return $this->recordShipment($order, $orderResponse);
     }
 
     public function track(string $consignmentId): OrderResponse
@@ -157,20 +186,23 @@ class PathaoCourier implements CourierInterface
             'item_type' => 2,
             'delivery_type' => 48,
             'item_weight' => $order->itemWeight,
-            'recipient_city' => (int) ($order->recipientCity ?? 1),
-            'recipient_zone' => (int) ($order->recipientZone ?? 1),
+            'recipient_city' => is_numeric($order->recipientCity) ? (int) $order->recipientCity : 1,
+            'recipient_zone' => is_numeric($order->recipientZone) ? (int) $order->recipientZone : 1,
             'amount_to_collect' => (int) $order->amountToCollect,
         ];
 
         $response = $this->http()->post("{$this->baseUrl}/aladdin/api/v1/merchant/price-plan", $payload);
 
-        if ($response->successful()) {
-            $data = $response->json('data') ?? [];
-            return (float) ($data['estimated_price'] ?? $data['final_price'] ?? 60.0);
+        if ($response->failed()) {
+            throw new CourierApiException(
+                "Pathao fee calculation failed: " . ($response->json('message') ?? $response->body()),
+                $response->status(),
+                $response->json() ?? []
+            );
         }
 
-        // Standard fallback calculation if API calculation fails
-        return 60.0 + (max(0, $order->itemWeight - 1.0) * 15.0);
+        $data = $response->json('data') ?? [];
+        return (float) ($data['estimated_price'] ?? $data['final_price'] ?? 60.0);
     }
 
     public function checkCoverage(string $areaIdentifier): bool
@@ -188,15 +220,38 @@ class PathaoCourier implements CourierInterface
         return true; // Default fallback to true for general area identifiers
     }
 
+    public function verifyWebhook(Request $request): bool
+    {
+        $secret = config('shipkit.couriers.pathao.webhook_secret', '');
+        if (empty($secret)) {
+            return true;
+        }
+
+        $authHeader = $request->header('Authorization', '');
+        if ($authHeader && str_replace('Bearer ', '', $authHeader) === $secret) {
+            return true;
+        }
+
+        $signature = $request->header('X-PATHAO-Signature') ?? $request->header('X-Pathao-Signature');
+        if ($signature) {
+            $expected = hash_hmac('sha256', $request->getContent(), $secret);
+            return hash_equals($expected, $signature);
+        }
+
+        return $request->header('X-Webhook-Secret') === $secret
+            || $request->query('token') === $secret;
+    }
+
     public function mapStatus(string $rawStatus): DeliveryStatus
     {
         return match (strtolower(trim($rawStatus))) {
             'pending', 'order_created' => DeliveryStatus::Pending,
-            'in_transit', 'dispatched', 'at_sorting_hub', 'out_for_delivery' => DeliveryStatus::InTransit,
+            'in_transit', 'dispatched', 'at_sorting_hub', 'out_for_delivery', 'picked_up', 'assigned_for_pickup' => DeliveryStatus::InTransit,
             'delivered' => DeliveryStatus::Delivered,
             'partial_delivery', 'partially_delivered' => DeliveryStatus::PartiallyDelivered,
-            'pickup_cancelled', 'cancelled', 'order_cancelled' => DeliveryStatus::Cancelled,
+            'pickup_cancelled', 'cancelled', 'order_cancelled', 'returned', 'return', 'returned_to_merchant' => DeliveryStatus::Cancelled,
             'on_hold', 'hold' => DeliveryStatus::Hold,
+            '' => DeliveryStatus::Unknown,
             default => DeliveryStatus::Processing,
         };
     }

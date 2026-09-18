@@ -25,10 +25,15 @@ class ShipkitServiceProvider extends ServiceProvider
                 __DIR__ . '/../config/shipkit.php' => config_path('shipkit.php'),
             ], 'shipkit-config');
 
-            $timestamp = date('Y_m_d_His');
-            $this->publishes([
-                __DIR__ . '/../database/migrations/create_shipments_table.php.stub' => database_path("migrations/{$timestamp}_create_shipments_table.php"),
-            ], 'shipkit-migrations');
+            $migrationFileName = 'create_shipments_table.php';
+            $migrationExists = ! empty(glob(database_path("migrations/*_{$migrationFileName}")));
+
+            if (! $migrationExists) {
+                $timestamp = date('Y_m_d_His');
+                $this->publishes([
+                    __DIR__ . "/../database/migrations/{$migrationFileName}.stub" => database_path("migrations/{$timestamp}_{$migrationFileName}"),
+                ], 'shipkit-migrations');
+            }
 
             $this->commands([
                 InstallCommand::class,

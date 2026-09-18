@@ -48,4 +48,42 @@ class CompareFeesTest extends TestCase
         $this->assertEquals($sortedFees, $fees);
         $this->assertEquals('pathao', $results[0]['courier']); // 60.0 < 70.0 < 85.0
     }
+
+    public function test_compare_fees_with_multiple_failing_couriers(): void
+    {
+        // Pathao and RedX both throw exceptions or fail
+        Http::fake([
+            '*/aladdin/api/v1/issue-token' => Http::response([], 500),
+            '*/charge-calculator' => Http::response([], 500),
+        ]);
+
+        config([
+            'shipkit.enabled_couriers' => ['pathao', 'redx', 'steadfast'],
+        ]);
+
+        $order = new OrderRequest(
+            merchantOrderId: 'ORD-FAIL-TEST',
+            recipientName: 'Customer',
+            recipientPhone: '01711111111',
+            recipientAddress: 'Dhanmondi, Dhaka',
+            recipientCity: 'Dhaka',
+            amountToCollect: 500,
+            itemWeight: 1.0
+        );
+
+        $results = Courier::compareFees($order);
+
+        $this->assertCount(3, $results);
+
+        // Steadfast should be first (the only available courier)
+        $this->assertEquals('steadfast', $results[0]['courier']);
+        $this->assertTrue($results[0]['available']);
+        $this->assertNotNull($results[0]['fee']);
+
+        // Remaining two failed couriers with null fees at the end
+        $this->assertFalse($results[1]['available']);
+        $this->assertNull($results[1]['fee']);
+        $this->assertFalse($results[2]['available']);
+        $this->assertNull($results[2]['fee']);
+    }
 }

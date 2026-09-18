@@ -40,6 +40,15 @@ class CourierManager extends Manager implements CourierInterface
         return new SteadfastCourier($config);
     }
 
+    protected function createDriver($driver)
+    {
+        try {
+            return parent::createDriver($driver);
+        } catch (\InvalidArgumentException $e) {
+            throw CourierNotSupportedException::make($driver);
+        }
+    }
+
     /**
      * Compare fees across all enabled couriers for a given order request.
      * Returns an array sorted by fee from lowest to highest.
@@ -70,6 +79,7 @@ class CourierManager extends Manager implements CourierInterface
         }
 
         usort($comparison, function ($a, $b) {
+            if ($a['fee'] === null && $b['fee'] === null) return 0;
             if ($a['fee'] === null) return 1;
             if ($b['fee'] === null) return -1;
             return $a['fee'] <=> $b['fee'];
@@ -102,6 +112,16 @@ class CourierManager extends Manager implements CourierInterface
     public function checkCoverage(string $areaIdentifier): bool
     {
         return $this->driver()->checkCoverage($areaIdentifier);
+    }
+
+    public function mapStatus(string $rawStatus): Enums\DeliveryStatus
+    {
+        return $this->driver()->mapStatus($rawStatus);
+    }
+
+    public function verifyWebhook(\Illuminate\Http\Request $request): bool
+    {
+        return $this->driver()->verifyWebhook($request);
     }
 
     public function getName(): string

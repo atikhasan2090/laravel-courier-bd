@@ -2,15 +2,20 @@
 
 namespace Shipkit\CourierBD\Drivers;
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Shipkit\CourierBD\Concerns\LogsShipments;
 use Shipkit\CourierBD\Contracts\CourierInterface;
 use Shipkit\CourierBD\DTOs\OrderRequest;
 use Shipkit\CourierBD\DTOs\OrderResponse;
 use Shipkit\CourierBD\Enums\DeliveryStatus;
 use Shipkit\CourierBD\Exceptions\CourierApiException;
+use Shipkit\CourierBD\Exceptions\OrderCreationFailedException;
 
 class SteadfastCourier implements CourierInterface
 {
+    use LogsShipments;
+
     protected string $baseUrl;
     protected string $apiKey;
     protected string $secretKey;
@@ -43,7 +48,7 @@ class SteadfastCourier implements CourierInterface
         $payload = [
             'invoice' => $order->merchantOrderId,
             'recipient_name' => $order->recipientName,
-            'recipient_phone' => $order->recipientPhone,
+            'recipient_phone' => $order->getNormalizedPhone(),
             'recipient_address' => $order->recipientAddress,
             'cod_amount' => (float) $order->amountToCollect,
             'note' => $order->specialInstruction ?? '',
@@ -65,17 +70,29 @@ class SteadfastCourier implements CourierInterface
 
         $data = $response->json('consignment') ?? $response->json();
         $consignmentId = (string) ($data['consignment_id'] ?? $data['tracking_code'] ?? '');
+        $trackingCode = (string) ($data['tracking_code'] ?? $consignmentId);
 
-        return new OrderResponse(
+        if (empty($consignmentId)) {
+            throw OrderCreationFailedException::make(
+                $this->getName(),
+                "Consignment ID missing in Steadfast response",
+                $response->json() ?? [],
+                $response->status()
+            );
+        }
+
+        $orderResponse = new OrderResponse(
             consignmentId: $consignmentId,
             status: DeliveryStatus::Pending,
-            trackingUrl: "https://steadfast.com.bd/t/{$consignmentId}",
+            trackingUrl: "https://steadfast.com.bd/t/{$trackingCode}",
             deliveryFee: (float) ($data['delivery_charge'] ?? $data['charge'] ?? 70.0),
             codFee: (float) ($data['cod_charge'] ?? 0.0),
             courier: $this->getName(),
             merchantOrderId: $order->merchantOrderId,
             rawResponse: $response->json() ?? []
         );
+
+        return $this->recordShipment($order, $orderResponse);
     }
 
     public function track(string $consignmentId): OrderResponse
@@ -113,14 +130,7 @@ class SteadfastCourier implements CourierInterface
 
     public function calculateFee(OrderRequest $order): float
     {
-        // Steadfast pricing calculation based on location (Inside Dhaka = 60/70, Outside = 120/130)
-        $isDhaka = false;
-        if ($order->recipientCity && strcasecmp($order->recipientCity, 'dhaka') === 0) {
-            $isDhaka = true;
-        } elseif (stripos($order->recipientAddress, 'dhaka') !== false) {
-            $isDhaka = true;
-        }
-
+        $isDhaka = $order->isInsideDhaka();
         $baseFee = $isDhaka ? 70.0 : 130.0;
         $weightExtra = max(0, $order->itemWeight - 1.0) * 20.0;
 
@@ -132,16 +142,35 @@ class SteadfastCourier implements CourierInterface
         return true; // Steadfast offers 64 districts nationwide coverage in Bangladesh
     }
 
+    public function verifyWebhook(Request $request): bool
+    {
+        $secret = config('shipkit.couriers.steadfast.webhook_secret', '');
+        if (empty($secret)) {
+            return true;
+        }
+
+        $authHeader = $request->header('Authorization', '');
+        if ($authHeader && str_replace('Bearer ', '', $authHeader) === $secret) {
+            return true;
+        }
+
+        return $request->header('X-Steadfast-Secret') === $secret
+            || $request->header('X-Webhook-Secret') === $secret
+            || $request->query('token') === $secret;
+    }
+
     public function mapStatus(string $rawStatus): DeliveryStatus
     {
         return match (strtolower(trim($rawStatus))) {
             'pending' => DeliveryStatus::Pending,
-            'in_review', 'delivered_approval_pending' => DeliveryStatus::Processing,
+            'in_review', 'delivered_approval_pending', 'partial_delivered_approval_pending' => DeliveryStatus::Processing,
+            'in_transit', 'dispatched' => DeliveryStatus::InTransit,
             'delivered' => DeliveryStatus::Delivered,
             'partial_delivered', 'partially_delivered' => DeliveryStatus::PartiallyDelivered,
             'cancelled', 'cancelled_approval_pending' => DeliveryStatus::Cancelled,
             'hold' => DeliveryStatus::Hold,
-            default => DeliveryStatus::InTransit,
+            '' => DeliveryStatus::Unknown,
+            default => DeliveryStatus::Unknown,
         };
     }
 }

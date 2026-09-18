@@ -2,8 +2,10 @@
 
 namespace Shipkit\CourierBD\Contracts;
 
+use Illuminate\Http\Request;
 use Shipkit\CourierBD\DTOs\OrderRequest;
 use Shipkit\CourierBD\DTOs\OrderResponse;
+use Shipkit\CourierBD\Enums\DeliveryStatus;
 
 interface CourierInterface
 {
@@ -31,6 +33,16 @@ interface CourierInterface
      * Check if a specific area/zone identifier is covered by the courier.
      */
     public function checkCoverage(string $areaIdentifier): bool;
+
+    /**
+     * Map a courier-specific raw status string to normalized DeliveryStatus enum.
+     */
+    public function mapStatus(string $rawStatus): DeliveryStatus;
+
+    /**
+     * Verify incoming webhook request authentication / signature.
+     */
+    public function verifyWebhook(Request $request): bool;
 
     /**
      * Get the driver courier name key.
