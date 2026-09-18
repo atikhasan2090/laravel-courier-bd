@@ -11,7 +11,8 @@
         "shipping",
         "ecommerce"
     ],
-    "homepage": "https://github.com/shipkit-bd/laravel-courier-bd",
+    "homepage": "https://github.com/atikhasan2090/laravel-courier-bd",
+    "readme": "README.md",
     "license": "MIT",
     "authors": [
         {
